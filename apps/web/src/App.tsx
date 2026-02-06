@@ -15,7 +15,10 @@ async function copyToClipboard(text: string) {
 }
 
 export default function App() {
-  const API = useMemo(() => "/api", []);
+  const API = useMemo(
+  () => import.meta.env.VITE_API_BASE || "/api",
+  []
+);
 
   const [prompt, setPrompt] = useState("");
   const [runId, setRunId] = useState<string | null>(null);
