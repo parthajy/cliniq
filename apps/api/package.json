@@ -5,7 +5,7 @@
     "scripts": {
     "dev": "concurrently -n API,CSS -c auto \"tsx watch src/index.ts\" \"npm run dev:css\"",
     "dev:css": "tailwindcss -c tailwind.config.js -i src/styles.css -o public/styles.css --watch",
-    "start": "node --enable-source-maps --loader tsx src/index.ts"
+    "start": "node --enable-source-maps --import tsx src/index.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",
