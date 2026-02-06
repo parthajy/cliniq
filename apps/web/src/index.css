@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+/* Tell Tailwind where to scan for class usage (v4) */
+@source "../index.html";
+@source "./**/*.{js,ts,jsx,tsx}";
+
+/* (Optional) If you want to keep using tailwind.config.js theme extensions later */
+@config "../tailwind.config.js";
+
+html, body, #root { height: 100%; }

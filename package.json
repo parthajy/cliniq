@@ -1,0 +1,20 @@
+{
+  "name": "cliniq",
+  "private": true,
+  "version": "0.0.1",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n WEB,API,WORKER -c auto \"npm:dev:web\" \"npm:dev:api\" \"npm:dev:worker\"",
+    "dev:web": "npm -w apps/web run dev",
+    "dev:api": "npm -w apps/api run dev",
+    "dev:worker": "npm -w apps/worker run dev",
+    "build": "npm -ws run build",
+    "typecheck": "npm -ws run typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
