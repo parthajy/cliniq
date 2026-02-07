@@ -7,6 +7,9 @@ import { webPublicAnalysisV1 } from "./webPublicAnalysisV1";
 import { slackOpenLoopsV1 } from "./slackOpenLoopsV1";
 
 /* -------------------- output types -------------------- */
+export type HandlerCtx = {
+  userId: string;
+};
 
 export type WebPublicAnalysisOutput = {
   kind: "web_public_analysis";
@@ -52,7 +55,8 @@ export type HandlerOutput =
 export async function runHandler(
   runId: string,
   prompt: string,
-  decision: RouteDecision
+    decision: RouteDecision,
+  ctx: HandlerCtx
 ): Promise<HandlerOutput> {
   const handler = decision.handler;
 
@@ -65,14 +69,14 @@ export async function runHandler(
     switch (handler) {
       case "gmail_triage_v1": {
         emit(runId, "info", "Handler: gmail_triage_v1 starting…");
-        const out = await gmailTriageV1(runId);
+        const out = await gmailTriageV1(runId, prompt, decision, ctx);
         emit(runId, "info", "Handler: gmail_triage_v1 done");
         return { kind: "gmail_triage", plan: decision.plan, query: out.query, top: out.top };
       }
 
       case "calendar_schedule_v1": {
         emit(runId, "info", "Handler: calendar_schedule_v1 starting…");
-        const out = await calendarScheduleV1(runId, prompt, decision);
+        const out = await calendarScheduleV1(runId, prompt, decision, ctx);
         emit(runId, "info", "Handler: calendar_schedule_v1 done");
         return out as any;
       }
@@ -104,7 +108,7 @@ const out = await webPublicAnalysisV1(runId, {
 
       case "slack_open_loops_v1": {
         emit(runId, "info", "Handler: slack_open_loops_v1 starting…");
-        const out = await slackOpenLoopsV1(runId, prompt, decision);
+        const out = await slackOpenLoopsV1(runId, prompt, decision, ctx);
         emit(runId, "info", "Handler: slack_open_loops_v1 done");
         return out as any;
       }

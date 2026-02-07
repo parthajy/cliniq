@@ -27,6 +27,8 @@ export default function App() {
   const viewportBottomRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
+  const userId = useMemo(() => getOrCreateUserId(), []);
+
     async function finalizeFromApi(id: string) {
     try {
       const r = await fetch(`${API}/run/${id}`);
@@ -80,7 +82,7 @@ export default function App() {
     const res = await fetch(`${API}/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: p }),
+      body: JSON.stringify({ prompt: p, userId }),
     });
 
     const text = await res.text();
@@ -145,6 +147,18 @@ export default function App() {
     }
   }
 
+  function getOrCreateUserId() {
+  const k = "cliniq_user_id";
+  const existing = localStorage.getItem(k);
+  if (existing) return existing;
+
+  const id =
+    (crypto as any)?.randomUUID?.() ||
+    `u_${Math.random().toString(16).slice(2)}_${Date.now()}`;
+  localStorage.setItem(k, id);
+  return id;
+}
+
   return (
     <div className="h-screen w-screen bg-white text-zinc-950">
       <TopBar status={status} runId={runId} />
@@ -189,8 +203,13 @@ export default function App() {
                 {/* Output */}
                 {finalOutput ? (
                   <div className="pt-2">
-                    <OutputRenderer output={finalOutput} runId={runId} apiBase={API} copyToClipboard={copyToClipboard} />
-
+                    <OutputRenderer
+                      output={finalOutput}
+                      runId={runId}
+                      apiBase={API}
+                      copyToClipboard={copyToClipboard}
+                      userId={userId}
+                    />
                   </div>
                 ) : null}
 
@@ -257,8 +276,9 @@ export default function App() {
           </div>
 
           {permissionEvt ? (
-            <PermissionBox evt={permissionEvt} />
-          ) : (
+  <PermissionBox evt={permissionEvt} apiBase={API} />
+) : (
+
             <div className="rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm">
               <div className="text-sm font-semibold">Connections</div>
               <div className="mt-3 text-xs text-zinc-500">
@@ -350,8 +370,27 @@ function EmptyState({ onExample, focus }: { onExample: (v: string) => void; focu
   );
 }
 
-function PermissionBox({ evt }: { evt: FeedEvt }) {
-  const authUrl = evt?.data?.authUrl as string | undefined;
+function PermissionBox({ evt, apiBase }: { evt: FeedEvt; apiBase: string }) {
+  const raw = evt?.data?.authUrl as string | undefined;
+
+  // If backend emits absolute URL, keep it.
+  // If backend emits relative "/slack/oauth/start?...",
+  // prefix with apiBase (Fly root), and also strip accidental "/api" prefix.
+  const normalizePath = (p: string) => {
+    if (!p) return p;
+    if (p.startsWith("/api/")) return p.slice(4); // "/api/foo" -> "/foo"
+    if (p === "/api") return "/";
+    return p;
+  };
+
+  const authUrl =
+    raw && /^https?:\/\//i.test(raw)
+      ? raw
+      : raw
+      ? `${apiBase}${normalizePath(raw).startsWith("/") ? "" : "/"}${normalizePath(raw)}`
+      : "";
+
+
   const perms = String(evt?.data?.perms || "");
   const kind = String(evt?.data?.kind || "");
 
@@ -364,25 +403,7 @@ function PermissionBox({ evt }: { evt: FeedEvt }) {
   const buttonLabel = isSlack ? "Connect Slack" : "Connect Google";
   const badge = isSlack ? "Slack OAuth" : "OAuth";
 
-    // If backend emits a relative authUrl (e.g. "/slack/oauth/start?..."),
-  // force it through API base (Fly). If it's already absolute, keep it.
-    const API_BASE = (import.meta as any).env?.VITE_API_BASE || "/api";
-
-  // Normalize:
-  // - If backend gives "/api/..." but API_BASE is "https://cliniq-api.fly.dev",
-  //   strip "/api" so we hit Fly root routes ("/slack/oauth/start", "/auth/google/start", etc).
-  const normalizePath = (p: string) => {
-    if (!p) return p;
-    if (p.startsWith("/api/")) return p.slice(4); // "/api/foo" -> "/foo"
-    if (p === "/api") return "/";
-    return p;
-  };
-  const resolvedAuthUrl =
-    authUrl && /^https?:\/\//i.test(authUrl)
-      ? authUrl
-      : authUrl
-      ? `${API_BASE}${normalizePath(authUrl).startsWith("/") ? "" : "/"}${normalizePath(authUrl)}`
-      : "";
+  const resolvedAuthUrl = authUrl;
 
   return (
     <div className="rounded-3xl border border-amber-200 bg-amber-50 p-4 shadow-sm">
@@ -443,11 +464,13 @@ function OutputRenderer({
   runId,
   apiBase,
   copyToClipboard,
+  userId,
 }: {
   output: any;
   runId: string | null;
   apiBase: string;
   copyToClipboard: (text: string) => Promise<boolean>;
+  userId: string;
 }) {
 
     if (output?.kind === "slack_open_loops" && Array.isArray(output?.items)) {
@@ -640,6 +663,7 @@ function OutputRenderer({
                     meet: d.meet,
                     attendees: d.attendees || [],
                     createWithoutInvite: !!d.createWithoutInvite,
+                    userId,
                   }),
                 });
 
@@ -735,6 +759,7 @@ function OutputRenderer({
               replyText: m.suggestedReply,
               threadId: m.threadId,
               inReplyTo: m.rfcMessageId,
+              userId,
             }),
           });
 

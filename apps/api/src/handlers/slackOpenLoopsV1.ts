@@ -1,7 +1,7 @@
 // /Users/partha/Desktop/cliniq/apps/api/src/handlers/slackOpenLoopsV1.ts
 import { emit } from "../runStore";
 import type { RouteDecision } from "../router";
-import { getProviderToken } from "../tokenStore";
+import { getSlackTokensForUser } from "../tokenStore";
 
 type SlackMsg = {
   channel: string;
@@ -134,8 +134,14 @@ async function fetchRecentMessages(
   return out;
 }
 
-export async function slackOpenLoopsV1(runId: string, prompt: string, decision: RouteDecision) {
-  const tok = getProviderToken(runId, "slack");
+export async function slackOpenLoopsV1(
+  runId: string,
+  prompt: string,
+  decision: RouteDecision,
+  ctx: { userId: string }
+) {
+  const tok = await getSlackTokensForUser(ctx.userId);
+
 
   if (!tok || typeof (tok as any).access_token !== "string") {
     const authUrl = `/api/slack/oauth/start?runId=${encodeURIComponent(runId)}`;

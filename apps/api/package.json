@@ -2,13 +2,14 @@
   "name": "@cliniq/api",
   "private": true,
   "type": "module",
-    "scripts": {
+  "scripts": {
     "dev": "concurrently -n API,CSS -c auto \"tsx watch src/index.ts\" \"npm run dev:css\"",
     "dev:css": "tailwindcss -c tailwind.config.js -i src/styles.css -o public/styles.css --watch",
     "start": "node --enable-source-maps --import tsx src/index.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",
+    "@supabase/supabase-js": "^2.95.3",
     "autoprefixer": "^10",
     "concurrently": "^9.2.1",
     "dotenv": "^16.4.7",

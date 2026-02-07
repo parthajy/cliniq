@@ -1,7 +1,7 @@
 // /Users/partha/Desktop/cliniq/apps/api/src/handlers/gmailTriageV1.ts
 import { google } from "googleapis";
 import { oauthClient } from "../googleAuth";
-import { getRunTokens } from "../tokenStore";
+import { getGoogleTokensForUser } from "../tokenStore";
 import { emit } from "../runStore";
 import type { RouteDecision } from "../router";
 import { llmJson } from "../openai";
@@ -88,10 +88,16 @@ Return JSON only.`;
   return (out.top || []).filter((x) => ids.has(x.messageId)).slice(0, n);
 }
 
-export async function gmailTriageV1(runId: string, _prompt?: string, _decision?: RouteDecision) {
+export async function gmailTriageV1(
+  runId: string,
+  _prompt: string | undefined,
+  _decision: RouteDecision | undefined,
+  ctx: { userId: string }
+)
+ {
   emit(runId, "info", "Gmail triage: preparing…");
 
-  const t = getRunTokens(runId);
+  const t = await getGoogleTokensForUser(ctx.userId);
   if (!t?.access_token) throw new Error("Missing Gmail token (did OAuth complete?)");
 
   const client = oauthClient();

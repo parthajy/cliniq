@@ -7,7 +7,13 @@ import { google } from "googleapis";
 
 import { setApproval, consumeApproval } from "./approvalStore";
 import { oauthClient, scopesFor } from "./googleAuth";
-import { setRunTokens, getRunTokens, setProviderToken, getRunTokens as _getRunTokens } from "./tokenStore";
+import {
+  storeGoogleTokensForUser,
+  getGoogleTokensForUser,
+  storeSlackTokensForUser,
+  getSlackTokensForUser,
+} from "./tokenStore";
+
 import { slackAuthUrl, slackExchangeCode } from "./slackAuth";
 import { listApprovalsForRun } from "./debugApprovals";
 
@@ -51,10 +57,11 @@ app.get("/health", async () => {
 /* -------------------- Slack OAuth (per run) -------------------- */
 app.get("/slack/oauth/start", async (req: any, reply: any) => {
   try {
-    const runId = String(req.query?.runId || "");
-    if (!runId) return reply.code(400).send({ ok: false, error: "runId required" });
+    const userId = String(req.query?.userId || "");
+    const runId = String(req.query?.runId || ""); // optional
+    if (!userId) return reply.code(400).send({ ok: false, error: "userId required" });
 
-    const { url } = slackAuthUrl(runId);
+    const { url } = slackAuthUrl(`${userId}:${runId || "-"}`); // keep existing slackAuthUrl signature
     return reply.redirect(url);
   } catch (e: any) {
     return reply.code(400).send({ ok: false, error: e?.message || "slack oauth start failed" });
@@ -68,11 +75,13 @@ app.get("/slack/oauth/callback", async (req: any, reply: any) => {
     if (!code) return reply.code(400).send("Missing code");
     if (!state || !state.includes(":")) return reply.code(400).send("Missing/invalid state");
 
-    const runId = state.split(":")[0];
-    if (!runId) return reply.code(400).send("Invalid state (runId missing)");
+    // state format we set: `${userId}:${runId}`
+    const [userId] = state.split(":");
+    if (!userId) return reply.code(400).send("Invalid state (userId missing)");
 
     const ex = await slackExchangeCode(code);
-    setProviderToken(runId, "slack", {
+
+    await storeSlackTokensForUser(userId, {
       access_token: ex.token,
       team_id: ex.team?.id,
       team_name: ex.team?.name,
@@ -99,21 +108,23 @@ app.get("/debug/approvals", async (req: any, reply: any) => {
 
 /* -------------------- Google OAuth -------------------- */
 app.get("/auth/google/start", async (req: any, reply: any) => {
-  const runId = String(req.query?.runId || "");
+  const userId = String(req.query?.userId || "");
+  const runId = String(req.query?.runId || ""); // optional (nice for UX)
   const perms = String(req.query?.perms || "google_gmail");
-  if (!runId) return reply.code(400).send("runId required");
+
+  if (!userId) return reply.code(400).send("userId required");
 
   const requested = perms.split(",").map((s: string) => s.trim()) as any;
   const scopes = scopesFor(requested);
 
-  console.log("[API][auth] start", { runId, scopes });
-
   const client = oauthClient();
+  const state = JSON.stringify({ userId, runId });
+
   const url = client.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
     scope: scopes,
-    state: runId,
+    state,
   });
 
   return reply.redirect(url);
@@ -121,20 +132,26 @@ app.get("/auth/google/start", async (req: any, reply: any) => {
 
 app.get("/auth/google/callback", async (req: any, reply: any) => {
   const code = String(req.query?.code || "");
-  const runId = String(req.query?.state || "");
-  if (!code || !runId) return reply.code(400).send("missing code/state");
+  const stateRaw = String(req.query?.state || "");
 
-  console.log("[API][auth] callback", { runId });
+  if (!code || !stateRaw) return reply.code(400).send("missing code/state");
+
+  let state: { userId: string; runId?: string } | null = null;
+  try {
+    state = JSON.parse(stateRaw);
+  } catch {
+    return reply.code(400).send("invalid state");
+  }
+
+  const userId = String(state?.userId || "");
+  if (!userId) return reply.code(400).send("invalid state (userId missing)");
 
   const client = oauthClient();
   const { tokens } = await client.getToken(code);
 
-  if (!tokens.access_token) {
-    console.error("[API][auth] no access_token", tokens);
-    return reply.code(400).send("no access_token");
-  }
+  if (!tokens.access_token) return reply.code(400).send("no access_token");
 
-  setRunTokens(runId, {
+  await storeGoogleTokensForUser(userId, {
     access_token: tokens.access_token,
     refresh_token: tokens.refresh_token || undefined,
     expiry_date: tokens.expiry_date || undefined,
@@ -155,7 +172,10 @@ app.get("/auth/google/callback", async (req: any, reply: any) => {
 app.post("/run", async (req: any, reply: any) => {
   const body = (req.body ?? {}) as any;
   const prompt = String(body.prompt ?? "").trim();
+  const userId = String(body.userId ?? "").trim();
+
   if (!prompt) return reply.code(400).send({ ok: false, error: "prompt required" });
+  if (!userId) return reply.code(400).send({ ok: false, error: "userId required" });
 
   const run = createRun(prompt);
   emit(run.id, "info", "Run created");
@@ -166,48 +186,54 @@ app.post("/run", async (req: any, reply: any) => {
       const decision = await clawdRoute(run.id, prompt);
       emit(run.id, "info", "Router decision", decision);
 
+      // Google gate
       const needsGoogle =
         decision.required_permissions.includes("google_gmail") ||
         decision.required_permissions.includes("google_calendar");
 
-      // ---- Google permission gate ----
       if (needsGoogle) {
-        const perms = decision.required_permissions
-          .filter((p: string) => p === "google_gmail" || p === "google_calendar")
-          .join(",");
+        const hasGoogle = await getGoogleTokensForUser(userId);
+        if (!hasGoogle) {
+          const perms = decision.required_permissions
+            .filter((p: string) => p === "google_gmail" || p === "google_calendar")
+            .join(",");
 
-        const authUrl = `${PUBLIC_BASE_URL}/auth/google/start?runId=${run.id}&perms=${encodeURIComponent(perms)}`;
+          const BASE = process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 8787}`;
+          const authUrl = `${BASE}/auth/google/start?userId=${encodeURIComponent(userId)}&runId=${run.id}&perms=${encodeURIComponent(perms)}`;
 
-        emit(run.id, "warn", "Permission required", {
-          kind: "google_oauth",
-          perms,
-          authUrl,
-        });
-
-        emit(run.id, "info", "Waiting for permission…");
-        await waitForTokens(run.id, 180_000);
-        emit(run.id, "info", "Permission granted. Continuing…");
+          emit(run.id, "warn", "Permission required", { kind: "google_oauth", perms, authUrl });
+          finish(run.id, { kind: "clarify", question: "Connect Google, then run again." });
+          return;
+        }
       }
 
-      // ---- Slack permission gate (NEW) ----
-      const needsSlack = decision.required_permissions.includes("slack_oauth");
+      // Slack gate
+      const needsSlack = decision.required_permissions.includes("slack_read");
       if (needsSlack) {
-        const authUrl = `${PUBLIC_BASE_URL}/slack/oauth/start?runId=${run.id}`;
+        const hasSlack = await getSlackTokensForUser(userId);
+        if (!hasSlack) {
+          const BASE = process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 8787}`;
+          const authUrl = `${BASE}/slack/oauth/start?userId=${encodeURIComponent(userId)}&runId=${run.id}`;
 
-        emit(run.id, "warn", "Permission required", {
-          kind: "slack_oauth",
-          perms: "slack_oauth",
-          authUrl,
-        });
-
-        emit(run.id, "info", "Waiting for permission…");
-        await waitForProviderToken(run.id, "slack", 180_000);
-        emit(run.id, "info", "Permission granted. Continuing…");
+          emit(run.id, "warn", "Slack permission required", { kind: "slack_oauth", perms: "slack_read", authUrl });
+          finish(run.id, {
+            kind: "clarify",
+            prompt,
+            question: "Connect Slack to analyze open loops, then run again.",
+            suggested_commands: [
+              "In Slack: what are my open loops across channels and DMs?",
+              "In Slack: what are the top unanswered questions from the last 14 days?",
+            ],
+          });
+          return;
+        }
       }
 
       emit(run.id, "info", "Executing plan…", { plan: decision.plan });
 
-      const output = await runHandler(run.id, prompt, decision);
+      // IMPORTANT: pass userId into handlers
+      const output = await runHandler(run.id, prompt, decision, { userId });
+
       emit(run.id, "info", "Execution complete");
       finish(run.id, output);
     } catch (e: any) {
@@ -279,6 +305,9 @@ app.post("/gmail/send", async (req: any, reply: any) => {
   const threadId = String(body.threadId || "");
   const inReplyTo = String(body.inReplyTo || "");
   const references = String(body.references || "");
+  const userId = String(body.userId || "").trim();
+if (!userId) return reply.code(400).send({ ok: false, error: "userId required" });
+
 
   if (!runId) return reply.code(400).send({ ok: false, error: "runId required" });
   if (!messageId) return reply.code(400).send({ ok: false, error: "messageId required" });
@@ -289,8 +318,9 @@ app.post("/gmail/send", async (req: any, reply: any) => {
   const approved = consumeApproval(runId, "gmail_send", messageId);
   if (!approved) return reply.code(403).send({ ok: false, error: "Not approved (or expired)" });
 
-  const t = getRunTokens(runId);
-  if (!t?.access_token) return reply.code(401).send({ ok: false, error: "Missing Gmail token" });
+  const t = await getGoogleTokensForUser(userId);
+if (!t?.access_token) return reply.code(401).send({ ok: false, error: "Missing Google token" });
+
 
   const client = oauthClient();
   client.setCredentials({
@@ -322,7 +352,6 @@ app.post("/gmail/send", async (req: any, reply: any) => {
 /* -------------------- Calendar create -------------------- */
 app.post("/calendar/create", async (req: any, reply: any) => {
   const body = (req.body || {}) as any;
-
   const runId = String(body.runId || "").trim();
   const draftId = String(body.draftId || "").trim();
   const title = String(body.title || "").trim();
@@ -332,6 +361,9 @@ app.post("/calendar/create", async (req: any, reply: any) => {
   const meet = Boolean(body.meet ?? true);
   const attendees = Array.isArray(body.attendees) ? body.attendees : [];
   const createWithoutInvite = Boolean(body.createWithoutInvite ?? false);
+  const userId = String(body.userId || "").trim();
+if (!userId) return reply.code(400).send({ ok: false, error: "userId required" });
+
 
   if (!runId) return reply.code(400).send({ ok: false, error: "runId required" });
   if (!draftId) return reply.code(400).send({ ok: false, error: "draftId required" });
@@ -356,8 +388,8 @@ app.post("/calendar/create", async (req: any, reply: any) => {
     });
   }
 
-  const t = getRunTokens(runId);
-  if (!t?.access_token) return reply.code(401).send({ ok: false, error: "Missing Calendar token" });
+  const t = await getGoogleTokensForUser(userId);
+if (!t?.access_token) return reply.code(401).send({ ok: false, error: "Missing Google token" });
 
   const client = oauthClient();
   client.setCredentials({
@@ -444,7 +476,7 @@ app.get("/run/:id/stream", async (req: any, reply: any) => {
   safeWrite("hello", { runId, status: run.status });
   for (const evt of run.events) safeWrite("event", { runId, event: evt });
 
-  const unsub = subscribe(runId, (msg) => {
+  const unsub = subscribe(runId, (msg: any) => {
     try {
       safeWrite(msg.type, msg);
     } catch {}
@@ -485,25 +517,3 @@ app
     console.error("[API][boot] failed", e);
     process.exit(1);
   });
-
-/* -------------------- helpers -------------------- */
-async function waitForTokens(runId: string, timeoutMs: number) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const t = _getRunTokens(runId);
-    if (t?.access_token) return;
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error("Timed out waiting for Google permission");
-}
-
-async function waitForProviderToken(runId: string, provider: "slack", timeoutMs: number) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const t = getRunTokens(runId);
-    const providerToken = (t as any)?.providers?.[provider] || (t as any)?.providerTokens?.[provider];
-    if (providerToken?.access_token) return;
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error(`Timed out waiting for ${provider} permission`);
-}

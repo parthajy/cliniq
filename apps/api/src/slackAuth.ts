@@ -22,7 +22,7 @@ function must(name: string) {
 
 export function slackAuthUrl(runId: string) {
   const client_id = must("SLACK_CLIENT_ID");
-  const redirect_uri = must("SLACK_REDIRECT_URL");
+  const redirect_uri = must("SLACK_REDIRECT_URI");
   const state = crypto
     .createHash("sha256")
     .update(`slack:${runId}:${Date.now()}:${Math.random()}`)
@@ -41,7 +41,7 @@ export function slackAuthUrl(runId: string) {
 export async function slackExchangeCode(code: string) {
   const client_id = must("SLACK_CLIENT_ID");
   const client_secret = must("SLACK_CLIENT_SECRET");
-  const redirect_uri = must("SLACK_REDIRECT_URL");
+  const redirect_uri = must("SLACK_REDIRECT_URI");
 
   const body = new URLSearchParams();
   body.set("client_id", client_id);

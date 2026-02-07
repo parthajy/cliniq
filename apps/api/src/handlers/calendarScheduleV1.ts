@@ -1,7 +1,7 @@
 // apps/api/src/handlers/calendarScheduleV1.ts
 import { google } from "googleapis";
 import { oauthClient } from "../googleAuth";
-import { getRunTokens } from "../tokenStore";
+import { getGoogleTokensForUser } from "../tokenStore";
 import { emit } from "../runStore";
 import type { RouteDecision } from "../router";
 import type { HandlerOutput } from "./index";
@@ -75,7 +75,8 @@ function parseDateFromPrompt(prompt: string): string {
 export async function calendarScheduleV1(
   runId: string,
   prompt: string,
-  decision: RouteDecision
+  decision: RouteDecision,
+  ctx: { userId: string }
 ): Promise<HandlerOutput> {
   emit(runId, "info", "Calendar: parsing prompt…", { prompt });
 
@@ -178,7 +179,7 @@ Return fields:
 
   // OPTIONAL: availability check (best-effort)
   try {
-    const t = getRunTokens(runId);
+    const t = await getGoogleTokensForUser(ctx.userId);
     if (!t?.access_token) throw new Error("Missing Calendar token");
 
     const client = oauthClient();
