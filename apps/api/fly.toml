@@ -7,3 +7,6 @@ primary_region = "bom"
   auto_stop_machines = "stop"
   auto_start_machines = true
   min_machines_running = 1
+
+  [build]
+  dockerfile = "Dockerfile"
