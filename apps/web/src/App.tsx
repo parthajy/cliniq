@@ -366,12 +366,22 @@ function PermissionBox({ evt }: { evt: FeedEvt }) {
 
     // If backend emits a relative authUrl (e.g. "/slack/oauth/start?..."),
   // force it through API base (Fly). If it's already absolute, keep it.
-  const API_BASE = (import.meta as any).env?.VITE_API_BASE || "/api";
+    const API_BASE = (import.meta as any).env?.VITE_API_BASE || "/api";
+
+  // Normalize:
+  // - If backend gives "/api/..." but API_BASE is "https://cliniq-api.fly.dev",
+  //   strip "/api" so we hit Fly root routes ("/slack/oauth/start", "/auth/google/start", etc).
+  const normalizePath = (p: string) => {
+    if (!p) return p;
+    if (p.startsWith("/api/")) return p.slice(4); // "/api/foo" -> "/foo"
+    if (p === "/api") return "/";
+    return p;
+  };
   const resolvedAuthUrl =
     authUrl && /^https?:\/\//i.test(authUrl)
       ? authUrl
       : authUrl
-      ? `${API_BASE}${authUrl.startsWith("/") ? "" : "/"}${authUrl}`
+      ? `${API_BASE}${normalizePath(authUrl).startsWith("/") ? "" : "/"}${normalizePath(authUrl)}`
       : "";
 
   return (
