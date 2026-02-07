@@ -1,29 +1,46 @@
+// /Users/partha/Desktop/cliniq/apps/api/src/server.ts
 import "dotenv/config";
 import Fastify from "fastify";
-import cors from "@fastify/cors";
+import fastifyCors from "@fastify/cors";
 import crypto from "crypto";
-import { setApproval, getApproval, consumeApproval } from "./approvalStore";
 import { google } from "googleapis";
+
+import { setApproval, consumeApproval } from "./approvalStore";
 import { oauthClient, scopesFor } from "./googleAuth";
-import { setRunTokens, getRunTokens } from "./tokenStore";
-import { setProviderToken } from "./tokenStore";
+import { setRunTokens, getRunTokens, setProviderToken, getRunTokens as _getRunTokens } from "./tokenStore";
 import { slackAuthUrl, slackExchangeCode } from "./slackAuth";
-import { listApprovalsForRun, expectedApprovalKey } from "./debugApprovals";
+import { listApprovalsForRun } from "./debugApprovals";
 
-import {
-  createRun,
-  emit,
-  subscribe,
-  finish,
-  fail,
-  getRun,
-} from "./runStore";
-
+import { createRun, emit, subscribe, finish, fail, getRun } from "./runStore";
 import { clawdRoute } from "./router";
 import { runHandler } from "./handlers";
 
 const app = Fastify({ logger: false });
-await app.register(cors, { origin: true, credentials: true });
+
+/** ---- CORS (Netlify + local dev) ---- */
+const ALLOWED_ORIGINS = new Set([
+  "http://localhost:5173",
+  "http://localhost:8787",
+  "https://cliniqio.netlify.app",
+]);
+
+/** ---- Public base URL for emitting OAuth URLs to the UI ---- */
+const PUBLIC_BASE_URL =
+  (process.env.PUBLIC_BASE_URL || "").trim() ||
+  `http://localhost:${process.env.PORT || 8787}`;
+
+await app.register(fastifyCors, {
+  origin: (origin, cb) => {
+    // allow curl/postman/no-origin
+    if (!origin) return cb(null, true);
+    if (ALLOWED_ORIGINS.has(origin)) return cb(null, true);
+    return cb(new Error(`CORS blocked: ${origin}`), false);
+  },
+  credentials: true,
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  exposedHeaders: ["Content-Type"],
+});
 
 /* -------------------- health -------------------- */
 app.get("/health", async () => {
@@ -62,7 +79,6 @@ app.get("/slack/oauth/callback", async (req: any, reply: any) => {
       user_id: ex.authed_user?.id,
     });
 
-    // close window-friendly
     return reply
       .type("text/html")
       .send(`<html><body style="font-family:system-ui;padding:24px">
@@ -75,21 +91,19 @@ app.get("/slack/oauth/callback", async (req: any, reply: any) => {
   }
 });
 
-app.get("/debug/approvals", async (req, reply) => {
-  const runId = String((req.query as any)?.runId || "").trim();
+app.get("/debug/approvals", async (req: any, reply: any) => {
+  const runId = String(req.query?.runId || "").trim();
   if (!runId) return reply.code(400).send({ ok: false, error: "runId required" });
-
   return reply.send({ ok: true, runId, keys: listApprovalsForRun(runId) });
 });
 
-/* -------------------- oauth -------------------- */
-app.get("/auth/google/start", async (req, res) => {
-  const runId = String((req.query as any)?.runId || "");
-  const perms = String((req.query as any)?.perms || "google_gmail");
+/* -------------------- Google OAuth -------------------- */
+app.get("/auth/google/start", async (req: any, reply: any) => {
+  const runId = String(req.query?.runId || "");
+  const perms = String(req.query?.perms || "google_gmail");
+  if (!runId) return reply.code(400).send("runId required");
 
-  if (!runId) return res.status(400).send("runId required");
-
-  const requested = perms.split(",").map((s) => s.trim()) as any;
+  const requested = perms.split(",").map((s: string) => s.trim()) as any;
   const scopes = scopesFor(requested);
 
   console.log("[API][auth] start", { runId, scopes });
@@ -102,14 +116,13 @@ app.get("/auth/google/start", async (req, res) => {
     state: runId,
   });
 
-  return res.redirect(url);
+  return reply.redirect(url);
 });
 
-app.get("/auth/google/callback", async (req, res) => {
-  const code = String((req.query as any)?.code || "");
-  const runId = String((req.query as any)?.state || "");
-
-  if (!code || !runId) return res.status(400).send("missing code/state");
+app.get("/auth/google/callback", async (req: any, reply: any) => {
+  const code = String(req.query?.code || "");
+  const runId = String(req.query?.state || "");
+  if (!code || !runId) return reply.code(400).send("missing code/state");
 
   console.log("[API][auth] callback", { runId });
 
@@ -118,7 +131,7 @@ app.get("/auth/google/callback", async (req, res) => {
 
   if (!tokens.access_token) {
     console.error("[API][auth] no access_token", tokens);
-    return res.status(400).send("no access_token");
+    return reply.code(400).send("no access_token");
   }
 
   setRunTokens(runId, {
@@ -128,7 +141,7 @@ app.get("/auth/google/callback", async (req, res) => {
     scope: tokens.scope || undefined,
   });
 
-  return res.type("html").send(`
+  return reply.type("text/html").send(`
     <html>
       <body style="font-family: ui-sans-serif; padding: 24px;">
         <h2>Google connected ✅</h2>
@@ -139,10 +152,10 @@ app.get("/auth/google/callback", async (req, res) => {
 });
 
 /* -------------------- create run -------------------- */
-app.post("/run", async (req, res) => {
+app.post("/run", async (req: any, reply: any) => {
   const body = (req.body ?? {}) as any;
   const prompt = String(body.prompt ?? "").trim();
-  if (!prompt) return res.status(400).send({ ok: false, error: "prompt required" });
+  if (!prompt) return reply.code(400).send({ ok: false, error: "prompt required" });
 
   const run = createRun(prompt);
   emit(run.id, "info", "Run created");
@@ -153,18 +166,17 @@ app.post("/run", async (req, res) => {
       const decision = await clawdRoute(run.id, prompt);
       emit(run.id, "info", "Router decision", decision);
 
-      // ---- permission gate ----
       const needsGoogle =
         decision.required_permissions.includes("google_gmail") ||
         decision.required_permissions.includes("google_calendar");
 
+      // ---- Google permission gate ----
       if (needsGoogle) {
         const perms = decision.required_permissions
-          .filter((p) => p === "google_gmail" || p === "google_calendar")
+          .filter((p: string) => p === "google_gmail" || p === "google_calendar")
           .join(",");
 
-        const authUrl =
-          `http://localhost:8787/auth/google/start?runId=${run.id}&perms=${encodeURIComponent(perms)}`;
+        const authUrl = `${PUBLIC_BASE_URL}/auth/google/start?runId=${run.id}&perms=${encodeURIComponent(perms)}`;
 
         emit(run.id, "warn", "Permission required", {
           kind: "google_oauth",
@@ -174,6 +186,22 @@ app.post("/run", async (req, res) => {
 
         emit(run.id, "info", "Waiting for permission…");
         await waitForTokens(run.id, 180_000);
+        emit(run.id, "info", "Permission granted. Continuing…");
+      }
+
+      // ---- Slack permission gate (NEW) ----
+      const needsSlack = decision.required_permissions.includes("slack_oauth");
+      if (needsSlack) {
+        const authUrl = `${PUBLIC_BASE_URL}/slack/oauth/start?runId=${run.id}`;
+
+        emit(run.id, "warn", "Permission required", {
+          kind: "slack_oauth",
+          perms: "slack_oauth",
+          authUrl,
+        });
+
+        emit(run.id, "info", "Waiting for permission…");
+        await waitForProviderToken(run.id, "slack", 180_000);
         emit(run.id, "info", "Permission granted. Continuing…");
       }
 
@@ -187,24 +215,22 @@ app.post("/run", async (req, res) => {
     }
   })();
 
-  return { ok: true, runId: run.id };
+  return reply.send({ ok: true, runId: run.id });
 });
 
-app.post("/run/:runId/approve", async (req, reply) => {
-  const runId = String((req.params as any).runId || "");
+/* -------------------- approvals -------------------- */
+app.post("/run/:runId/approve", async (req: any, reply: any) => {
+  const runId = String(req.params?.runId || "");
   const body = (req.body || {}) as any;
   const action = String(body.action || "");
 
   if (!runId) return reply.code(400).send({ ok: false, error: "runId required" });
   if (!action) return reply.code(400).send({ ok: false, error: "action required" });
 
-  // ✅ ONE canonical id (same rule everywhere)
   const approvalId = String(body.approvalId || body.id || body.draftId || body.messageId || "").trim();
-
-  // store with canonical id so pickId can’t drift
   const stored = setApproval(runId, action, { ...body, id: approvalId });
 
-  console.log("[API][approve] stored", { runId, action, approvalId, storedKey: stored.key, body });
+  console.log("[API][approve] stored", { runId, action, approvalId, storedKey: stored.key });
 
   return reply.send({ ok: true, stored });
 });
@@ -230,7 +256,6 @@ function makeRfc822Reply(args: {
   inReplyTo?: string;
   references?: string;
 }) {
-  const boundary = "----cliniq_" + crypto.randomBytes(8).toString("hex");
   const lines = [
     `To: ${args.to}`,
     `Subject: ${normalizeReSubject(args.subject)}`,
@@ -243,14 +268,15 @@ function makeRfc822Reply(args: {
   return lines.join("\r\n");
 }
 
-app.post("/gmail/send", async (req, reply) => {
+/* -------------------- Gmail send -------------------- */
+app.post("/gmail/send", async (req: any, reply: any) => {
   const body = (req.body || {}) as any;
   const runId = String(body.runId || "");
   const messageId = String(body.messageId || "");
   const toEmail = String(body.toEmail || "");
   const subject = String(body.subject || "");
   const replyText = String(body.replyText || "");
-    const threadId = String(body.threadId || "");
+  const threadId = String(body.threadId || "");
   const inReplyTo = String(body.inReplyTo || "");
   const references = String(body.references || "");
 
@@ -260,9 +286,8 @@ app.post("/gmail/send", async (req, reply) => {
   if (!subject) return reply.code(400).send({ ok: false, error: "subject required" });
   if (!replyText) return reply.code(400).send({ ok: false, error: "replyText required" });
 
-  // require explicit approval
-    const approved = consumeApproval(runId, "gmail_send", messageId);
- if (!approved) return reply.code(403).send({ ok: false, error: "Not approved (or expired)" });
+  const approved = consumeApproval(runId, "gmail_send", messageId);
+  if (!approved) return reply.code(403).send({ ok: false, error: "Not approved (or expired)" });
 
   const t = getRunTokens(runId);
   if (!t?.access_token) return reply.code(401).send({ ok: false, error: "Missing Gmail token" });
@@ -276,7 +301,7 @@ app.post("/gmail/send", async (req, reply) => {
 
   const gmail = google.gmail({ version: "v1", auth: client });
 
-    const rawEmail = makeRfc822Reply({
+  const rawEmail = makeRfc822Reply({
     to: toEmail,
     subject,
     body: replyText,
@@ -294,7 +319,8 @@ app.post("/gmail/send", async (req, reply) => {
   return reply.send({ ok: true, id: sent.data.id });
 });
 
-app.post("/calendar/create", async (req, reply) => {
+/* -------------------- Calendar create -------------------- */
+app.post("/calendar/create", async (req: any, reply: any) => {
   const body = (req.body || {}) as any;
 
   const runId = String(body.runId || "").trim();
@@ -312,41 +338,23 @@ app.post("/calendar/create", async (req, reply) => {
   if (!title) return reply.code(400).send({ ok: false, error: "title required" });
   if (!start || !end) return reply.code(400).send({ ok: false, error: "start/end required" });
 
-  // ✅ must match what /approve stored
   const approvalId = String(body.approvalId || "").trim() || draftId;
 
-  console.log("[API][calendar_create] approval check", {
-    runId,
-    draftId,
-    approvalId,
-    expected: `${runId}:calendar_create:${approvalId}`,
-  });
-
   const approved = consumeApproval(runId, "calendar_create", approvalId);
-
   if (!approved) {
-  const keys = listApprovalsForRun(runId);
-
-  console.log("[API][calendar_create] NOT APPROVED", {
-    runId,
-    draftId,
-    approvalId,
-    expected: `${runId}:calendar_create:${approvalId}`,
-    keys,
-  });
-
-  return reply.code(403).send({
-    ok: false,
-    error: "Not approved (or expired)",
-    debug: {
-      runId,
-      draftId,
-      approvalId,
-      expected: `${runId}:calendar_create:${approvalId}`,
-      keys,
-    },
-  });
-}
+    const keys = listApprovalsForRun(runId);
+    return reply.code(403).send({
+      ok: false,
+      error: "Not approved (or expired)",
+      debug: {
+        runId,
+        draftId,
+        approvalId,
+        expected: `${runId}:calendar_create:${approvalId}`,
+        keys,
+      },
+    });
+  }
 
   const t = getRunTokens(runId);
   if (!t?.access_token) return reply.code(401).send({ ok: false, error: "Missing Calendar token" });
@@ -402,72 +410,63 @@ app.post("/calendar/create", async (req, reply) => {
 });
 
 /* -------------------- SSE stream -------------------- */
-app.get("/run/:id/stream", async (req, reply) => {
-  const runId = String((req.params as any).id || "");
+app.get("/run/:id/stream", async (req: any, reply: any) => {
+  const runId = String(req.params?.id || "");
   const run = getRun(runId);
-
   if (!run) return reply.code(404).send({ ok: false, error: "run not found" });
 
   console.log("[API][sse] connect", { runId });
 
-  // IMPORTANT: use reply.raw but do NOT call reply.send after this
   const res = reply.raw;
 
   res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
-  // Some proxies buffer SSE; this helps
   res.setHeader("X-Accel-Buffering", "no");
 
-  // If supported
+  // CORS for SSE (explicit helps proxies)
+  const origin = String(req.headers.origin || "");
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
+
   (res as any).flushHeaders?.();
 
   let closed = false;
   const safeWrite = (eventName: string, data: any) => {
     if (closed) return;
-    try {
-      res.write(`event: ${eventName}\n`);
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
-    } catch (e) {
-      closed = true;
-      try {
-        res.end();
-      } catch {}
-    }
+    res.write(`event: ${eventName}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
-  // initial hello + replay existing events
   safeWrite("hello", { runId, status: run.status });
   for (const evt of run.events) safeWrite("event", { runId, event: evt });
 
   const unsub = subscribe(runId, (msg) => {
-    // absolutely never throw from here
     try {
       safeWrite(msg.type, msg);
-    } catch (e) {
-      // swallow
-    }
+    } catch {}
   });
 
   req.raw.on("close", () => {
     closed = true;
     console.log("[API][sse] close", { runId });
-    try {
-      unsub();
-    } catch {}
+    try { unsub(); } catch {}
+    try { res.end(); } catch {}
   });
 
-  // Tell Fastify "we're handling the response"
   return reply.hijack();
 });
 
 /* -------------------- fetch run -------------------- */
-app.get("/run/:id", async (req, res) => {
-  const runId = (req.params as any).id as string;
+app.get("/run/:id", async (req: any, reply: any) => {
+  const runId = String(req.params?.id || "");
   const run = getRun(runId);
-  if (!run) return res.status(404).send({ ok: false, error: "run not found" });
+  if (!run) return reply.code(404).send({ ok: false, error: "run not found" });
 
-  return {
+  return reply.send({
     ok: true,
     run: {
       id: run.id,
@@ -475,11 +474,12 @@ app.get("/run/:id", async (req, res) => {
       finalOutput: run.finalOutput,
       error: run.error,
     },
-  };
+  });
 });
 
 /* -------------------- boot -------------------- */
-app.listen({ port: Number(process.env.PORT || 8787), host: "0.0.0.0" })
+app
+  .listen({ port: Number(process.env.PORT || 8787), host: "0.0.0.0" })
   .then(() => console.log("[API][boot] listening", { port: process.env.PORT || 8787 }))
   .catch((e) => {
     console.error("[API][boot] failed", e);
@@ -490,9 +490,20 @@ app.listen({ port: Number(process.env.PORT || 8787), host: "0.0.0.0" })
 async function waitForTokens(runId: string, timeoutMs: number) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const t = getRunTokens(runId);
+    const t = _getRunTokens(runId);
     if (t?.access_token) return;
     await new Promise((r) => setTimeout(r, 500));
   }
   throw new Error("Timed out waiting for Google permission");
+}
+
+async function waitForProviderToken(runId: string, provider: "slack", timeoutMs: number) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const t = getRunTokens(runId);
+    const providerToken = (t as any)?.providers?.[provider] || (t as any)?.providerTokens?.[provider];
+    if (providerToken?.access_token) return;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(`Timed out waiting for ${provider} permission`);
 }

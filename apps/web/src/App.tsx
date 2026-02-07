@@ -15,10 +15,7 @@ async function copyToClipboard(text: string) {
 }
 
 export default function App() {
-  const API = useMemo(
-  () => import.meta.env.VITE_API_BASE || "/api",
-  []
-);
+  const API = useMemo(() => import.meta.env.VITE_API_BASE || "/api", []);
 
   const [prompt, setPrompt] = useState("");
   const [runId, setRunId] = useState<string | null>(null);
@@ -192,7 +189,7 @@ export default function App() {
                 {/* Output */}
                 {finalOutput ? (
                   <div className="pt-2">
-                    <OutputRenderer output={finalOutput} runId={runId} copyToClipboard={copyToClipboard} />
+                    <OutputRenderer output={finalOutput} runId={runId} apiBase={API} copyToClipboard={copyToClipboard} />
 
                   </div>
                 ) : null}
@@ -424,10 +421,12 @@ function EventRow({ evt }: { evt: FeedEvt }) {
 function OutputRenderer({
   output,
   runId,
+  apiBase,
   copyToClipboard,
 }: {
   output: any;
   runId: string | null;
+  apiBase: string;
   copyToClipboard: (text: string) => Promise<boolean>;
 }) {
 
@@ -587,7 +586,7 @@ function OutputRenderer({
               onClick={async () => {
                 if (!runId) return;
 
-                const ar = await fetch(`/api/run/${runId}/approve`, {
+                const ar = await fetch(`${apiBase}/run/${runId}/approve`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
@@ -607,7 +606,7 @@ function OutputRenderer({
  }
  console.log("[WEB] approve ok", aj);
 
-                const res = await fetch(`/api/calendar/create`, {
+                const res = await fetch(`${apiBase}/calendar/create`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
@@ -695,7 +694,7 @@ function OutputRenderer({
           if (!runId) return;
 
           // 1) approve
-          await fetch(`/api/run/${runId}/approve`, {
+          await fetch(`${apiBase}/run/${runId}/approve`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -705,7 +704,7 @@ function OutputRenderer({
           });
 
           // 2) send
-          const res = await fetch(`/api/gmail/send`, {
+          const res = await fetch(`${apiBase}/gmail/send`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
