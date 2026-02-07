@@ -1,12 +1,12 @@
 app = "cliniq-api"
 primary_region = "bom"
 
+[build]
+  dockerfile = "apps/api/Dockerfile"
+
 [http_service]
   internal_port = 8787
   force_https = true
   auto_stop_machines = "stop"
   auto_start_machines = true
   min_machines_running = 1
-
-  [build]
-  dockerfile = "Dockerfile"

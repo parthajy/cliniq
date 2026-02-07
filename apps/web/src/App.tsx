@@ -136,6 +136,9 @@ export default function App() {
 
     es.onerror = (err) => {
       console.error("[WEB][sse] error", err);
+            // If SSE breaks behind proxies, don't leave UI stuck forever.
+      try { es.close(); } catch {}
+      setStatus((s) => (s === "running" ? "failed" : s));
     };
   }
 
